@@ -31,6 +31,7 @@ struct Entry {
 
 struct MappingSettings {
     std::wstring drive = L"Z:";
+    std::wstring remote;
     std::wstring username = L"guest";
     std::wstring password;
     bool persist = true;
@@ -184,6 +185,8 @@ void ApplySettingsBlock(const std::vector<std::pair<std::wstring, std::wstring>>
         const std::wstring& value = item.second;
         if (key == L"drive") {
             config->mapping.drive = NormalizeDriveLetter(value);
+        } else if (key == L"remote" || key == L"share") {
+            config->mapping.remote = value;
         } else if (key == L"username") {
             config->mapping.username = value.empty() ? L"guest" : value;
         } else if (key == L"password") {
@@ -212,7 +215,7 @@ Entry ParseEntryBlock(const std::vector<std::pair<std::wstring, std::wstring>>& 
             entry.kind = Lower(value);
         } else if (key == L"replace_gateway") {
             entry.replace_gateway = ParseBool(value);
-        } else if (key == L"drive" || key == L"username" || key == L"password" || key == L"persist") {
+        } else if (key == L"drive" || key == L"remote" || key == L"share" || key == L"username" || key == L"password" || key == L"persist") {
             throw std::runtime_error("settings keys must be in their own block before link entries");
         } else {
             throw std::runtime_error("unknown config entry key");
@@ -409,6 +412,17 @@ std::wstring ResolveSource(const Entry& entry, const std::optional<std::wstring>
     return L"\\\\" + *gateway_ip + entry.source.substr(sep);
 }
 
+std::wstring ResolveMappingRemote(const Config& config, const std::optional<std::wstring>& gateway_ip) {
+    if (config.mapping.remote.empty()) {
+        return L"";
+    }
+
+    Entry entry;
+    entry.source = config.mapping.remote;
+    entry.replace_gateway = config.mapping.default_replace_gateway;
+    return ResolveSource(entry, gateway_ip);
+}
+
 struct UncPath {
     std::wstring host;
     std::wstring root;
@@ -455,7 +469,15 @@ std::wstring BuildDriveTarget(const std::wstring& drive, const UncPath& unc) {
     return drive + L"\\" + unc.relative;
 }
 
-void ValidateSingleShareRoot(const Config& config, const std::optional<std::wstring>& gateway_ip, std::wstring* remote_root, std::wstring* remote_host) {
+void DetermineMappingRoot(const Config& config, const std::optional<std::wstring>& gateway_ip, std::wstring* remote_root, std::wstring* remote_host) {
+    const std::wstring configured_remote = ResolveMappingRemote(config, gateway_ip);
+    if (!configured_remote.empty()) {
+        const UncPath unc = SplitUncPath(configured_remote);
+        *remote_root = unc.root;
+        *remote_host = unc.host;
+        return;
+    }
+
     for (const Entry& entry : config.entries) {
         const std::wstring source = ResolveSource(entry, gateway_ip);
         const UncPath unc = SplitUncPath(source);
@@ -468,6 +490,31 @@ void ValidateSingleShareRoot(const Config& config, const std::optional<std::wstr
             throw std::runtime_error("all sources must be under the same UNC share when using one mapped drive");
         }
     }
+}
+
+std::wstring BuildLinkTargetPath(const Config& config, const Entry& entry, const std::optional<std::wstring>& gateway_ip, const std::wstring& remote_root) {
+    if (entry.source.rfind(L"\\\\", 0) == 0) {
+        const std::wstring source = ResolveSource(entry, gateway_ip);
+        const UncPath unc = SplitUncPath(source);
+        if (!EqualsInsensitive(unc.root, remote_root)) {
+            throw std::runtime_error("link source does not match the configured mapped share");
+        }
+        return BuildDriveTarget(config.mapping.drive, unc);
+    }
+
+    std::wstring relative = entry.source;
+    while (!relative.empty() && (relative.front() == L'\\' || relative.front() == L'/')) {
+        relative.erase(relative.begin());
+    }
+    for (wchar_t& ch : relative) {
+        if (ch == L'/') {
+            ch = L'\\';
+        }
+    }
+    if (relative.empty()) {
+        return config.mapping.drive + L"\\";
+    }
+    return config.mapping.drive + L"\\" + relative;
 }
 
 std::wstring GetMappedRemotePath(const std::wstring& drive) {
@@ -753,20 +800,14 @@ int Sync(const Options& options) {
 
     std::wstring remote_root;
     std::wstring remote_host;
-    ValidateSingleShareRoot(config, gateway_ip, &remote_root, &remote_host);
+    DetermineMappingRoot(config, gateway_ip, &remote_root, &remote_host);
     MapDrive(config, remote_root, remote_host);
     std::wcout << L"Drive  " << config.mapping.drive << L" -> " << remote_root << std::endl;
 
     int failures = 0;
     for (const Entry& entry : config.entries) {
         try {
-            const std::wstring source = ResolveSource(entry, gateway_ip);
-            const UncPath unc = SplitUncPath(source);
-            if (!EqualsInsensitive(unc.root, remote_root)) {
-                throw std::runtime_error("source does not match mapped drive root");
-            }
-
-            const std::wstring target = BuildDriveTarget(config.mapping.drive, unc);
+            const std::wstring target = BuildLinkTargetPath(config, entry, gateway_ip, remote_root);
             const bool is_directory = IsDirectoryTarget(entry, target);
             const fs::path link = entry.link;
             ValidateReachablePath(target, is_directory, L"Mapped target");

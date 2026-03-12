@@ -10,16 +10,17 @@ Format:
 
 ```ini
 drive=Z:
+remote=\\gateway\POE
 username=guest
 password=
 persist=true
 replace_gateway=true
 
-source=\\gateway\POE\Content.ggpk
+source=Content.ggpk
 link=C:\Games\Path of Exile\Content.ggpk
 kind=file
 
-source=\\gateway\POE\Bundles
+source=Bundles
 link=C:\Games\Path of Exile\Bundles
 kind=directory
 ```
@@ -28,6 +29,7 @@ Rules:
 
 - Put the drive settings in their own block before the link entries.
 - `drive` defaults to `Z:`.
+- `remote` defines the SMB share that gets mapped to the drive. When this is set, the device-mapping phase is independent from individual links.
 - `username` defaults to `guest`.
 - The built-in `guest` account works as plain `guest`; it does not need a machine-name prefix.
 - Other local usernames should use a fully qualified Windows form such as `HOSTNAME\user`; the shorthand `.\user` is not reliable for persisted credentials.
@@ -35,13 +37,14 @@ Rules:
 - `persist` defaults to `true`.
 - Separate link entries with a blank line.
 - `source` and `link` are required in each link block.
+- `source` may be either a path relative to the mapped drive root like `Content.ggpk` or a full UNC path that must match the configured mapped share.
 - `kind` is optional but recommended: `file` or `directory`.
 - `replace_gateway` in the settings block defaults to `true` for all entries, and can still be overridden per entry.
 - Host replacement only happens when the UNC host is `gateway` or `{gateway}`.
-- All link sources must be under the same UNC share because the app maps one drive letter per config file.
-- Sync persists the configured SMB credential, maps the configured drive letter to that share, and then creates links that point at the mapped drive.
+- If `remote` is omitted, the app falls back to inferring the mapped share from the link entries for backward compatibility.
+- Sync persists the configured SMB credential, maps the configured drive letter to the configured share, and then creates links that point at the mapped drive.
 - If an older or conflicting config was applied before, sync reconciles it by replacing stale link targets, clearing the stored credential for that host, disconnecting the configured drive/share session, and remapping with the current config.
-- Sync validates the mapped-drive target before creating a link and validates the link immediately after creation. If validation fails, the link is not kept.
+- Link failures are isolated per entry after the drive-mapping phase has completed. Sync validates each mapped-drive target before creating a link and validates the link immediately after creation. If validation fails, only that link fails.
 
 ## Commands
 
