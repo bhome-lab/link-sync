@@ -41,7 +41,6 @@ struct LinkConfig {
     std::optional<std::wstring> username;
     std::optional<std::wstring> password;
     std::optional<bool> persist;
-    std::optional<bool> replace_gateway;
     std::wstring parse_error;
 };
 
@@ -51,7 +50,6 @@ struct MappingDefaults {
     std::wstring username = L"guest";
     std::wstring password;
     bool persist = true;
-    bool replace_gateway = true;
 };
 
 struct Config {
@@ -65,7 +63,6 @@ struct EffectiveSettings {
     std::wstring username;
     std::wstring password;
     bool persist = true;
-    bool replace_gateway = true;
 };
 
 struct ParsedUnc {
@@ -303,7 +300,7 @@ void RejectUnknownKeys(const Json::object& object, const std::set<std::string>& 
 
 MappingDefaults ParseDefaults(const Json& value) {
     const Json::object& object = EnsureObject(value, "defaults");
-    RejectUnknownKeys(object, {"drive", "remote", "username", "password", "persist", "replace_gateway"}, "defaults");
+    RejectUnknownKeys(object, {"drive", "remote", "username", "password", "persist"}, "defaults");
 
     MappingDefaults defaults;
     if (const auto drive = GetOptionalString(object, "drive")) {
@@ -321,15 +318,12 @@ MappingDefaults ParseDefaults(const Json& value) {
     if (const auto persist = GetOptionalBool(object, "persist")) {
         defaults.persist = *persist;
     }
-    if (const auto replace_gateway = GetOptionalBool(object, "replace_gateway")) {
-        defaults.replace_gateway = *replace_gateway;
-    }
     return defaults;
 }
 
 LinkConfig ParseLinkObject(size_t index, const Json& value) {
     const Json::object& object = EnsureObject(value, "links[]");
-    RejectUnknownKeys(object, {"source", "link", "kind", "drive", "remote", "username", "password", "persist", "replace_gateway"}, "links[]");
+    RejectUnknownKeys(object, {"source", "link", "kind", "drive", "remote", "username", "password", "persist"}, "links[]");
 
     LinkConfig entry;
     entry.index = index;
@@ -347,7 +341,6 @@ LinkConfig ParseLinkObject(size_t index, const Json& value) {
     entry.username = GetOptionalString(object, "username");
     entry.password = GetOptionalString(object, "password");
     entry.persist = GetOptionalBool(object, "persist");
-    entry.replace_gateway = GetOptionalBool(object, "replace_gateway");
     return entry;
 }
 
@@ -537,7 +530,7 @@ private:
 };
 
 bool IsGatewayPlaceholder(const std::wstring& host) {
-    return EqualsInsensitive(host, L"gateway") || EqualsInsensitive(host, L"{gateway}");
+    return EqualsInsensitive(host, L"{gateway}");
 }
 
 void NormalizePathSlashes(std::wstring* value) {
@@ -656,8 +649,8 @@ std::wstring BuildRemoteRoot(const std::wstring& host, const std::wstring& share
     return L"\\\\" + host + L"\\" + share;
 }
 
-std::wstring ResolveGatewayPath(const std::wstring& value, bool replace_gateway, LazyGatewayResolver* resolver) {
-    if (!replace_gateway || value.rfind(L"\\\\", 0) != 0) {
+std::wstring ResolveGatewayPath(const std::wstring& value, LazyGatewayResolver* resolver) {
+    if (value.rfind(L"\\\\", 0) != 0) {
         return value;
     }
 
@@ -681,7 +674,6 @@ EffectiveSettings ResolveSettings(const MappingDefaults& defaults, const LinkCon
     settings.username = entry.username.has_value() ? *entry.username : defaults.username;
     settings.password = entry.password.value_or(defaults.password);
     settings.persist = entry.persist.value_or(defaults.persist);
-    settings.replace_gateway = entry.replace_gateway.value_or(defaults.replace_gateway);
     if (settings.username.empty()) {
         settings.username = L"guest";
     }
@@ -722,8 +714,8 @@ PlannedLink PrepareLink(const MappingDefaults& defaults, const LinkConfig& entry
     planned.mapping.password = settings.password;
     planned.mapping.persist = settings.persist;
 
-    const std::wstring source = ResolveGatewayPath(entry.source, settings.replace_gateway, gateway);
-    const std::wstring remote = settings.remote.empty() ? L"" : ResolveGatewayPath(settings.remote, settings.replace_gateway, gateway);
+    const std::wstring source = ResolveGatewayPath(entry.source, gateway);
+    const std::wstring remote = settings.remote.empty() ? L"" : ResolveGatewayPath(settings.remote, gateway);
 
     std::vector<std::wstring> target_segments;
     if (source.rfind(L"\\\\", 0) == 0) {
@@ -872,7 +864,7 @@ void PersistWindowsCredential(const std::wstring& host, const std::wstring& user
 std::wstring GetMappedRemotePath(const std::wstring& drive) {
     DWORD size = 0;
     DWORD error = WNetGetConnectionW(drive.c_str(), nullptr, &size);
-    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE) {
+    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE || error == ERROR_CONNECTION_UNAVAIL) {
         return L"";
     }
     if (error != ERROR_MORE_DATA) {
@@ -883,6 +875,9 @@ std::wstring GetMappedRemotePath(const std::wstring& drive) {
 
     std::wstring buffer(size, L'\0');
     error = WNetGetConnectionW(drive.c_str(), buffer.data(), &size);
+    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE || error == ERROR_CONNECTION_UNAVAIL) {
+        return L"";
+    }
     if (error != NO_ERROR) {
         std::ostringstream msg;
         msg << "WNetGetConnectionW failed. Win32=" << error;
@@ -921,7 +916,7 @@ bool HasPersistentMappingProfile(const std::wstring& drive) {
 std::wstring GetMappedUserName(const std::wstring& drive) {
     DWORD size = 0;
     DWORD error = WNetGetUserW(drive.c_str(), nullptr, &size);
-    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE) {
+    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE || error == ERROR_CONNECTION_UNAVAIL) {
         return L"";
     }
     if (error != ERROR_MORE_DATA) {
@@ -932,6 +927,9 @@ std::wstring GetMappedUserName(const std::wstring& drive) {
 
     std::wstring buffer(size, L'\0');
     error = WNetGetUserW(drive.c_str(), buffer.data(), &size);
+    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE || error == ERROR_CONNECTION_UNAVAIL) {
+        return L"";
+    }
     if (error != NO_ERROR) {
         std::ostringstream msg;
         msg << "WNetGetUserW failed. Win32=" << error;

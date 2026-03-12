@@ -12,11 +12,10 @@ Format:
 {
   "defaults": {
     "drive": "Z:",
-    "remote": "\\\\gateway",
+    "remote": "\\\\{gateway}",
     "username": "guest",
     "password": "",
-    "persist": true,
-    "replace_gateway": true
+    "persist": true
   },
   "links": [
     {
@@ -26,7 +25,7 @@ Format:
     },
     {
       "drive": "Y:",
-      "remote": "\\\\gateway\\POE2\\BundlesRoot",
+      "remote": "\\\\{gateway}\\POE2\\BundlesRoot",
       "source": "Audio",
       "link": "C:\\POE2\\Audio",
       "kind": "directory"
@@ -39,15 +38,15 @@ Rules:
 
 - `defaults` is optional.
 - `links` is required and must be a JSON array.
-- Each link may override `drive`, `remote`, `username`, `password`, `persist`, and `replace_gateway`.
+- Each link may override `drive`, `remote`, `username`, `password`, and `persist`.
 - `drive` defaults to `Z:`.
 - `username` defaults to `guest`.
 - `password` defaults to empty.
 - `persist` defaults to `true`.
-- `replace_gateway` defaults to `true`.
 - The built-in `guest` account works as plain `guest`; it does not need a machine-name prefix.
-- `remote` may be `\\gateway`, `\\gateway\share`, or `\\gateway\share\prefix`.
-- When `remote` is host-only, a relative `source` must start with the share name. Example: `remote=\\gateway` plus `source=POE1\Content.ggpk`.
+- `remote` may be `\\{gateway}`, `\\{gateway}\share`, or `\\{gateway}\share\prefix`.
+- `source` and `remote` always replace a UNC host of `{gateway}` with the detected or overridden gateway IP.
+- When `remote` is host-only, a relative `source` must start with the share name. Example: `remote=\\{gateway}` plus `source=POE1\Content.ggpk`.
 - `source` may be relative or a full UNC path.
 - `kind` is optional: `file` or `directory`. If omitted, the app inspects the resolved target.
 

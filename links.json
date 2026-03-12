@@ -1,11 +1,10 @@
 {
   "defaults": {
     "drive": "Z:",
-    "remote": "\\\\gateway",
+    "remote": "\\\\{gateway}",
     "username": "guest",
     "password": "",
-    "persist": true,
-    "replace_gateway": true
+    "persist": true
   },
   "links": [
     {
