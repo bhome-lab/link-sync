@@ -54,3 +54,9 @@ Binary output:
 - The binary requests elevation through its embedded application manifest (`requireAdministrator`).
 - The link object is marked read-only. This does not modify permissions on the SMB target.
 - The `install` command creates an elevated per-user `ONLOGON` Scheduled Task using built-in `schtasks.exe`.
+
+## Releases
+
+- Every commit on `main` is treated as a stable release.
+- GitHub Actions builds `links.exe`, packages it, tags the commit as `v1.0.N`, and publishes a release with the same short name.
+- The floating `latest` tag is updated to the newest `main` commit on every release.

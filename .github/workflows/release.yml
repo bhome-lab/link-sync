@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Compute version
+        id: version
+        shell: pwsh
+        run: |
+          $count = git rev-list --count HEAD
+          $version = "v1.0.$count"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "asset=links-$version-windows-x64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Build release binary
+        shell: pwsh
+        run: msbuild Links.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64
+
+      - name: Package assets
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "release"
+          if (Test-Path $stage) {
+            Remove-Item -Recurse -Force $stage
+          }
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item bin\Release\links.exe $stage
+          Copy-Item links.conf $stage
+          Copy-Item README.md $stage
+          $asset = Join-Path $env:RUNNER_TEMP "${{ steps.version.outputs.asset }}"
+          if (Test-Path $asset) {
+            Remove-Item -Force $asset
+          }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $asset
+
+      - name: Push version and latest tags
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ steps.version.outputs.version }}" $env:GITHUB_SHA
+          git tag -f latest $env:GITHUB_SHA
+          git push origin "refs/tags/${{ steps.version.outputs.version }}" --force
+          git push origin refs/tags/latest --force
+
+      - name: Create or update GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $asset = Join-Path $env:RUNNER_TEMP "${{ steps.version.outputs.asset }}"
+          $notes = "Stable release for $env:GITHUB_SHA"
+          gh release view $version --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $version $asset --clobber --repo $env:GITHUB_REPOSITORY
+            gh release edit $version --title $version --notes $notes --latest --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $version $asset --title $version --notes $notes --latest --repo $env:GITHUB_REPOSITORY
+          }
