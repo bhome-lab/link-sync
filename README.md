@@ -56,8 +56,10 @@ Rules:
 - Sync derives state from live Windows mappings and live SMB sessions only. It does not keep a sidecar state file.
 - Each unique `(drive, remote root, username, password, persist)` combination is mapped once, then all links on that mapping are processed independently.
 - If multiple links request the same drive with different settings, those links fail and other mappings continue.
+- If multiple links request the same local link path with different targets or kinds, those links fail before any mapping work for that path.
 - If multiple mappings to the same host use different credentials, those links fail and other mappings continue.
 - If a drive is already mapped to a different remote, sync disconnects that drive and applies the configured mapping.
+- If a drive is already mapped to the configured remote but its persistence mode or mapped username does not match the config, sync disconnects and remaps that drive to reconcile it.
 - If Windows reports a host-level SMB credential conflict, sync disconnects current SMB connections for that host and retries once. This is how conflicting old mappings are reconciled without relying on app-owned state.
 - If the retry still conflicts, only the affected links fail.
 - Link failures are normal. Sync always completes and returns success after processing, even if some or all links fail.

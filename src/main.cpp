@@ -99,6 +99,7 @@ struct PlannedLink {
     std::wstring display_name;
     std::wstring kind;
     fs::path link;
+    std::wstring link_key;
     std::wstring target;
     MappingAssignment mapping;
 };
@@ -609,6 +610,27 @@ std::vector<std::wstring> SplitRelativeSegments(std::wstring path) {
     return segments;
 }
 
+std::wstring NormalizeLocalLinkKey(const fs::path& path) {
+    fs::path absolute = fs::absolute(path).lexically_normal();
+    std::wstring native = absolute.native();
+    NormalizePathSlashes(&native);
+    return Lower(native);
+}
+
+std::wstring NormalizeKindValue(const std::wstring& kind) {
+    if (kind == L"dir") {
+        return L"directory";
+    }
+    return kind;
+}
+
+bool LinkKindsCompatible(const std::wstring& left, const std::wstring& right) {
+    if (left.empty() || right.empty()) {
+        return true;
+    }
+    return NormalizeKindValue(left) == NormalizeKindValue(right);
+}
+
 std::wstring JoinSegments(const std::vector<std::wstring>& segments, size_t start = 0) {
     std::wstring result;
     for (size_t i = start; i < segments.size(); ++i) {
@@ -688,6 +710,7 @@ PlannedLink PrepareLink(const MappingDefaults& defaults, const LinkConfig& entry
     planned.index = entry.index;
     planned.display_name = DisplayLabel(entry);
     planned.link = fs::path(entry.link);
+    planned.link_key = NormalizeLocalLinkKey(planned.link);
     planned.kind = Lower(Trim(entry.kind));
     if (!planned.kind.empty() && planned.kind != L"file" && planned.kind != L"directory" && planned.kind != L"dir") {
         throw std::runtime_error("kind must be file or directory");
@@ -871,6 +894,68 @@ std::wstring GetMappedRemotePath(const std::wstring& drive) {
     return buffer;
 }
 
+std::wstring DriveProfileRegistryPath(const std::wstring& drive) {
+    const std::wstring normalized = NormalizeDriveLetter(drive);
+    if (normalized.size() != 2 || normalized[1] != L':') {
+        throw std::runtime_error("invalid drive letter");
+    }
+    return L"Network\\" + normalized.substr(0, 1);
+}
+
+bool HasPersistentMappingProfile(const std::wstring& drive) {
+    HKEY key = nullptr;
+    const std::wstring path = DriveProfileRegistryPath(drive);
+    const LONG result = RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE, &key);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        return false;
+    }
+    if (result != ERROR_SUCCESS) {
+        std::ostringstream msg;
+        msg << "RegOpenKeyExW failed. Win32=" << result;
+        throw std::runtime_error(msg.str());
+    }
+    RegCloseKey(key);
+    return true;
+}
+
+std::wstring GetMappedUserName(const std::wstring& drive) {
+    DWORD size = 0;
+    DWORD error = WNetGetUserW(drive.c_str(), nullptr, &size);
+    if (error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE) {
+        return L"";
+    }
+    if (error != ERROR_MORE_DATA) {
+        std::ostringstream msg;
+        msg << "WNetGetUserW failed. Win32=" << error;
+        throw std::runtime_error(msg.str());
+    }
+
+    std::wstring buffer(size, L'\0');
+    error = WNetGetUserW(drive.c_str(), buffer.data(), &size);
+    if (error != NO_ERROR) {
+        std::ostringstream msg;
+        msg << "WNetGetUserW failed. Win32=" << error;
+        throw std::runtime_error(msg.str());
+    }
+    if (!buffer.empty() && buffer.back() == L'\0') {
+        buffer.pop_back();
+    }
+    return buffer;
+}
+
+std::wstring ShortUserName(const std::wstring& value) {
+    const size_t pos = value.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) {
+        return value;
+    }
+    return value.substr(pos + 1);
+}
+
+bool UserNamesEquivalent(const std::wstring& left, const std::wstring& right) {
+    return EqualsInsensitive(left, right) ||
+        EqualsInsensitive(ShortUserName(left), ShortUserName(right));
+}
+
 void CancelNetworkConnection(const std::wstring& name) {
     const DWORD error = WNetCancelConnection2W(name.c_str(), CONNECT_UPDATE_PROFILE, TRUE);
     if (error == NO_ERROR || error == ERROR_NOT_CONNECTED || error == ERROR_BAD_DEVICE || error == ERROR_CONNECTION_UNAVAIL) {
@@ -947,11 +1032,17 @@ EnsureOutcome EnsureMappingOnce(const MappingAssignment& mapping) {
             return {false, false, L"configured drive letter is already used by a local device"};
         }
 
+        const bool existing_profile = HasPersistentMappingProfile(mapping.drive);
         const std::wstring existing_remote = GetMappedRemotePath(mapping.drive);
         if (!existing_remote.empty() && EqualsInsensitive(existing_remote, mapping.remote_root)) {
-            return {true, false, L""};
+            const std::wstring existing_user = GetMappedUserName(mapping.drive);
+            if (existing_profile == mapping.persist &&
+                (existing_user.empty() || UserNamesEquivalent(existing_user, mapping.username))) {
+                return {true, false, L""};
+            }
         }
-        if (!existing_remote.empty()) {
+
+        if (!existing_remote.empty() || existing_profile) {
             CancelNetworkConnection(mapping.drive);
         }
 
@@ -1157,12 +1248,12 @@ int Sync(const Options& options) {
 
     LazyGatewayResolver gateway(options.gateway_ip_override);
     std::map<MappingAssignment, std::vector<PlannedLink>> mapping_links;
+    std::vector<PlannedLink> prepared_links;
     SyncSummary summary;
 
     for (const LinkConfig& entry : config.links) {
         try {
-            PlannedLink planned = PrepareLink(config.defaults, entry, &gateway);
-            mapping_links[planned.mapping].push_back(std::move(planned));
+            prepared_links.push_back(PrepareLink(config.defaults, entry, &gateway));
         } catch (const std::exception& ex) {
             ++summary.links_failed;
             std::wcerr << L"FAIL  " << DisplayLabel(entry) << L": " << ToWide(ex.what()) << std::endl;
@@ -1171,6 +1262,31 @@ int Sync(const Options& options) {
 
     if (const auto gateway_ip = gateway.Current()) {
         std::wcout << L"Gateway IP: " << *gateway_ip << std::endl;
+    }
+
+    std::map<std::wstring, std::pair<std::wstring, std::wstring>> desired_links;
+    std::set<std::wstring> conflicted_link_keys;
+    for (const PlannedLink& planned : prepared_links) {
+        const auto it = desired_links.find(planned.link_key);
+        if (it == desired_links.end()) {
+            desired_links.emplace(planned.link_key, std::make_pair(planned.target, planned.kind));
+            continue;
+        }
+
+        if (!EqualsInsensitive(it->second.first, planned.target) ||
+            !LinkKindsCompatible(it->second.second, planned.kind)) {
+            conflicted_link_keys.insert(planned.link_key);
+        }
+    }
+
+    for (PlannedLink& planned : prepared_links) {
+        if (conflicted_link_keys.find(planned.link_key) != conflicted_link_keys.end()) {
+            ++summary.links_failed;
+            std::wcerr << L"FAIL  " << planned.display_name
+                << L": same local link path is requested with incompatible targets or kinds" << std::endl;
+            continue;
+        }
+        mapping_links[planned.mapping].push_back(std::move(planned));
     }
 
     std::map<MappingAssignment, std::wstring> mapping_errors;
