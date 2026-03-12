@@ -1,66 +1,90 @@
 # link-sync
 
-Small Windows-native utility for synchronizing local symbolic links to SMB targets through a persisted mapped drive that uses the current Ethernet gateway IP.
+Small Windows-native utility for keeping local symbolic links pointed at SMB content through persisted mapped drives that are resolved from the current Ethernet gateway IP.
 
 ## Config
 
-The default config file is `links.conf` next to `links.exe`.
+The default config file is `links.json` next to `links.exe`.
 
 Format:
 
-```ini
-drive=Z:
-remote=\\gateway\POE
-username=guest
-password=
-persist=true
-replace_gateway=true
-
-source=Content.ggpk
-link=C:\Games\Path of Exile\Content.ggpk
-kind=file
-
-source=Bundles
-link=C:\Games\Path of Exile\Bundles
-kind=directory
+```json
+{
+  "defaults": {
+    "drive": "Z:",
+    "remote": "\\\\gateway",
+    "username": "guest",
+    "password": "",
+    "persist": true,
+    "replace_gateway": true
+  },
+  "links": [
+    {
+      "source": "POE1\\Content.ggpk",
+      "link": "C:\\POE1\\Content.ggpk",
+      "kind": "file"
+    },
+    {
+      "drive": "Y:",
+      "remote": "\\\\gateway\\POE2\\BundlesRoot",
+      "source": "Audio",
+      "link": "C:\\POE2\\Audio",
+      "kind": "directory"
+    }
+  ]
+}
 ```
 
 Rules:
 
-- Put the drive settings in their own block before the link entries.
+- `defaults` is optional.
+- `links` is required and must be a JSON array.
+- Each link may override `drive`, `remote`, `username`, `password`, `persist`, and `replace_gateway`.
 - `drive` defaults to `Z:`.
-- `remote` defines the SMB share that gets mapped to the drive. When this is set, the device-mapping phase is independent from individual links.
 - `username` defaults to `guest`.
-- The built-in `guest` account works as plain `guest`; it does not need a machine-name prefix.
-- Other local usernames should use a fully qualified Windows form such as `HOSTNAME\user`; the shorthand `.\user` is not reliable for persisted credentials.
 - `password` defaults to empty.
 - `persist` defaults to `true`.
-- Separate link entries with a blank line.
-- `source` and `link` are required in each link block.
-- `source` may be either a path relative to the mapped drive root like `Content.ggpk` or a full UNC path that must match the configured mapped share.
-- `kind` is optional but recommended: `file` or `directory`.
-- `replace_gateway` in the settings block defaults to `true` for all entries, and can still be overridden per entry.
-- Host replacement only happens when the UNC host is `gateway` or `{gateway}`.
-- If `remote` is omitted, the app falls back to inferring the mapped share from the link entries for backward compatibility.
-- Sync persists the configured SMB credential, maps the configured drive letter to the configured share, and then creates links that point at the mapped drive.
-- If an older or conflicting config was applied before, sync reconciles it by replacing stale link targets, clearing the stored credential for that host, disconnecting the configured drive/share session, and remapping with the current config.
-- Link failures are isolated per entry after the drive-mapping phase has completed. Sync validates each mapped-drive target before creating a link and validates the link immediately after creation. If validation fails, only that link fails.
+- `replace_gateway` defaults to `true`.
+- The built-in `guest` account works as plain `guest`; it does not need a machine-name prefix.
+- `remote` may be `\\gateway`, `\\gateway\share`, or `\\gateway\share\prefix`.
+- When `remote` is host-only, a relative `source` must start with the share name. Example: `remote=\\gateway` plus `source=POE1\Content.ggpk`.
+- `source` may be relative or a full UNC path.
+- `kind` is optional: `file` or `directory`. If omitted, the app inspects the resolved target.
+
+## Reconciliation
+
+- Sync derives state from live Windows mappings and live SMB sessions only. It does not keep a sidecar state file.
+- Each unique `(drive, remote root, username, password, persist)` combination is mapped once, then all links on that mapping are processed independently.
+- If multiple links request the same drive with different settings, those links fail and other mappings continue.
+- If multiple mappings to the same host use different credentials, those links fail and other mappings continue.
+- If a drive is already mapped to a different remote, sync disconnects that drive and applies the configured mapping.
+- If Windows reports a host-level SMB credential conflict, sync disconnects current SMB connections for that host and retries once. This is how conflicting old mappings are reconciled without relying on app-owned state.
+- If the retry still conflicts, only the affected links fail.
+- Link failures are normal. Sync always completes and returns success after processing, even if some or all links fail.
+- Links validate the target before changing the existing symlink, so a missing or invalid new target does not corrupt a previously working link.
+- Missing parent directories for the local link path are created automatically.
+
+## Explorer Visibility
+
+- The binary enables `EnableLinkedConnections` in `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`.
+- This is the standard Windows fix for mapped drives created in an elevated context not appearing in Explorer.
+- If the value is enabled for the first time, a sign-out and sign-in may still be required before Explorer shows the drive.
 
 ## Commands
 
 ```powershell
 links.exe
-links.exe sync --config D:\Links\links.conf
-links.exe sync --config D:\Links\links.conf --gateway-ip 127.0.0.1
+links.exe sync --config D:\Links\links.json
+links.exe sync --config D:\Links\links.json --gateway-ip 127.0.0.1
 links.exe detect-gateway
-links.exe install --config D:\Links\links.conf
+links.exe install --config D:\Links\links.json
 links.exe uninstall
 ```
 
 ## Build
 
 ```powershell
-msbuild D:\Links\Links.vcxproj /p:Configuration=Release /p:Platform=x64
+msbuild D:\Links\Links.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64
 ```
 
 Binary output:
@@ -71,7 +95,7 @@ Binary output:
 
 - The binary requests elevation through its embedded application manifest (`requireAdministrator`).
 - The link object is marked read-only. This does not modify permissions on the SMB target.
-- The app persists the SMB credential from config into Windows before mapping the drive, which is the mechanism intended to stop Windows from prompting for credentials later.
+- The app uses the standard library, Win32 networking APIs, and a bundled copy of `json11` for JSON parsing. No extra runtime dependencies are required beyond the Visual C++ runtime.
 - The `install` command creates an elevated per-user `ONLOGON` Scheduled Task using built-in `schtasks.exe`.
 
 ## Releases

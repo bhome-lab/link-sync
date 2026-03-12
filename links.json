@@ -1,0 +1,23 @@
+{
+  "defaults": {
+    "drive": "Z:",
+    "remote": "\\\\gateway",
+    "username": "guest",
+    "password": "",
+    "persist": true,
+    "replace_gateway": true
+  },
+  "links": [
+    {
+      "source": "POE1\\Content.ggpk",
+      "link": "C:\\POE1\\Content.ggpk",
+      "kind": "file"
+    },
+    {
+      "drive": "Y:",
+      "source": "POE2\\Bundles",
+      "link": "C:\\POE2\\Bundles",
+      "kind": "directory"
+    }
+  ]
+}

@@ -43,8 +43,9 @@ jobs:
           }
           New-Item -ItemType Directory -Path $stage | Out-Null
           Copy-Item bin\Release\links.exe $stage
-          Copy-Item links.conf $stage
+          Copy-Item links.json $stage
           Copy-Item README.md $stage
+          Copy-Item THIRD_PARTY_NOTICES.txt $stage
           $asset = Join-Path $env:RUNNER_TEMP "${{ steps.version.outputs.asset }}"
           if (Test-Path $asset) {
             Remove-Item -Force $asset
